@@ -106,12 +106,6 @@ DebugDash/
 | 💀 Game Over | Energy = 0% |
 | 🏆 Deploy Success | Survived 60 seconds |
 
----
-
-## 📄 License
-
-Internal tool — developed for **RealCore Services GmbH**  
-© 2026 RealCore Services GmbH · All rights reserved
 
 ---
 
