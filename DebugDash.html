@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>🐞 DEBUG DASH · RealCore Services GmbH</title>
+    <style>
+        * { user-select: none; -webkit-tap-highlight-color: transparent; }
+        body {
+            background: linear-gradient(145deg, #0a0f1a 0%, #0c1222 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            padding: 20px;
+        }
+        .game-container {
+            background: #03070faa;
+            backdrop-filter: blur(4px);
+            border-radius: 48px;
+            padding: 20px;
+            box-shadow: 0 20px 35px rgba(0,0,0,0.6);
+            border: 1px solid #3a7c9e;
+        }
+        canvas {
+            display: block;
+            margin: 0 auto;
+            border-radius: 28px;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+            cursor: pointer;
+            background: #0d1428;
+        }
+        .info-panel {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 16px;
+            background: #071e30cc;
+            border-radius: 60px;
+            padding: 8px 20px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .stats { display: flex; gap: 20px; font-weight: bold; font-size: 1rem; }
+        .stat {
+            background: #000000aa;
+            padding: 5px 16px;
+            border-radius: 40px;
+            color: #d4f1ff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .energy-stat { background: #2a3a2acc; color: #ffdd99; }
+        button {
+            background: #2c5c7c;
+            border: none;
+            font-family: monospace;
+            font-weight: bold;
+            padding: 6px 22px;
+            border-radius: 60px;
+            color: white;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+        button:active { transform: scale(0.96); }
+        .status-message {
+            background: #071a28;
+            border-radius: 28px;
+            padding: 8px 16px;
+            text-align: center;
+            font-size: 0.8rem;
+            color: #b9dcff;
+            margin-top: 12px;
+            border-left: 4px solid #ffaa55;
+        }
+        footer { text-align: center; font-size: 0.65rem; margin-top: 10px; color: #5588aa; }
+    </style>
+</head>
+<body>
+<div class="game-container">
+    <canvas id="gameCanvas" width="1000" height="450" style="width:100%;height:auto;max-width:1000px;aspect-ratio:1000/450"></canvas>
+    <div class="info-panel">
+        <div class="stats">
+            <div class="stat">💻 SCORE: <span id="scoreCount">0</span></div>
+            <div class="stat energy-stat">🔋 ENERGY: <span id="energyPercent">80</span>%</div>
+            <div class="stat">🐛 BUGS HIT: <span id="bugsHit">0</span></div>
+            <div class="stat">☕ COFFEE: <span id="coffeeCollected">0</span></div>
+        </div>
+        <button id="restartBtn">🔄 RESTART</button>
+    </div>
+    <div class="status-message" id="gameStatusMsg">
+        🖱️ CLICK / SPACE / ⬆️ to JUMP &nbsp;|&nbsp; ☕ Run into Coffee &nbsp;|&nbsp; 🐛 Jump over Bugs &nbsp;|&nbsp; 🐛 = -15 &nbsp;|&nbsp; ☕ = +20
+    </div>
+    <footer>⚡ RealCore Services GmbH · Debug Dash · Survive 60 seconds!</footer>
+</div>
+
+<script>
+(function(){
+    const canvas = document.getElementById('gameCanvas');
+    const ctx    = canvas.getContext('2d');
+    const W = 1000, H = 450;
+    canvas.width = W; canvas.height = H;
+
+    // ── CONSTANTS ───────────────────────────────────────────
+    const GROUND_Y    = H - 72;
+    const PW = 34, PH = 36;
+    const GRAVITY     = 0.68;
+    const JUMP_POWER  = -9.8;
+    const MIN_GAP     = 280;   // minimum pixels between any two objects
+    const WIN_TIME    = 60;
+
+    // ── STATE ───────────────────────────────────────────────
+    let running, score, energy, bugsHit, coffeeCnt, gameTime, frameN;
+    let player, obstacles, powerups, speed, bgOff;
+    let bugTimer, coffeeTimer, timerInterval;
+
+    // ── UI ──────────────────────────────────────────────────
+    function ui() {
+        document.getElementById('scoreCount').innerText    = Math.floor(score);
+        document.getElementById('energyPercent').innerText = Math.floor(energy);
+        document.getElementById('bugsHit').innerText       = bugsHit;
+        document.getElementById('coffeeCollected').innerText = coffeeCnt;
+        const es = document.getElementById('energyPercent');
+        es.style.color = energy < 20 ? '#ff6666' : energy < 45 ? '#ffaa66' : '#aaffaa';
+    }
+
+    function setMsg(html, bg, border) {
+        const d = document.getElementById('gameStatusMsg');
+        d.innerHTML = html;
+        d.style.background    = bg     || '#071a28';
+        d.style.borderLeftColor = border || '#ffaa55';
+    }
+
+    // ── SPAWN HELPERS ────────────────────────────────────────
+    // Returns true if we can place an object at x=W without being
+    // too close to anything already on screen.
+    function clearToSpawn() {
+        for (let o of obstacles) { if (o.x > W - MIN_GAP) return false; }
+        for (let o of powerups)  { if (o.x > W - MIN_GAP) return false; }
+        return true;
+    }
+
+    function spawnBug() {
+        if (!clearToSpawn()) return;
+        obstacles.push({ x: W, y: GROUND_Y + 2, w: 34, h: 34, drain: 15 });
+    }
+
+    function spawnCoffee() {
+        if (!clearToSpawn()) return;
+        powerups.push({ x: W, y: GROUND_Y + 2, w: 32, h: 32, restore: 20 });
+    }
+
+    // ── COLLISION (AABB) ─────────────────────────────────────
+    function hits(a, bx, by, bw, bh) {
+        return a.x < bx + bw && a.x + PW > bx &&
+               a.y < by + bh && a.y + PH > by;
+    }
+
+    // ── GAME OVER / WIN ──────────────────────────────────────
+    function endGame(win, msg) {
+        if (!running) return;
+        running = false;
+        clearInterval(timerInterval);
+        if (win) {
+            setMsg(`✨🏆 DEPLOY SUCCESS! Survived ${WIN_TIME}s! Score: ${Math.floor(score)} | Bugs: ${bugsHit} | Coffee: ${coffeeCnt}`,
+                   '#1c5a2b', '#aaffaa');
+        } else {
+            setMsg(msg || `💀 OUT OF ENERGY! Score: ${Math.floor(score)} | Bugs: ${bugsHit} | Coffee: ${coffeeCnt}`,
+                   '#5a2a2a', '#ff8888');
+        }
+        ui();
+    }
+
+    // ── RESTART ──────────────────────────────────────────────
+    function restart() {
+        clearInterval(timerInterval);
+        running  = true;
+        score    = 0;
+        energy   = 80;
+        bugsHit  = 0;
+        coffeeCnt= 0;
+        gameTime = 0;
+        frameN   = 0;
+        speed    = 4.2;
+        bgOff    = 0;
+        obstacles= [];
+        powerups = [];
+
+        player = { x: 100, y: GROUND_Y, vy: 0, onGround: true };
+
+        // Timers: bugs every 90 frames (~1.5s), coffee every 150 frames (~2.5s)
+        bugTimer    = 60;   // first bug appears after 1 second
+        coffeeTimer = 120;  // first coffee after 2 seconds
+
+        timerInterval = setInterval(() => {
+            if (!running) return;
+            gameTime++;
+            score += 1.5;
+            energy = Math.max(0, energy - 0.25);
+            if (energy <= 0) { endGame(false, '💤 BURNOUT: Energy depleted!'); return; }
+            if (gameTime >= WIN_TIME) { endGame(true); return; }
+            // Speed ramp after 15s
+            if (gameTime > 15) speed = Math.min(5.8, 4.2 + (gameTime - 15) / 50);
+            ui();
+        }, 1000);
+
+        setMsg('🏃 FAIR RUN: Jump over 🐛 bugs · Run into ☕ coffee · 🐛 = -15 · ☕ = +20');
+        ui();
+    }
+
+    // ── UPDATE ───────────────────────────────────────────────
+    function update() {
+        if (!running) return;
+
+        // Player physics
+        player.vy += GRAVITY;
+        player.y  += player.vy;
+        if (player.y >= GROUND_Y) { player.y = GROUND_Y; player.vy = 0; player.onGround = true; }
+        else { player.onGround = false; }
+        if (player.y < 0) { player.y = 0; if (player.vy < 0) player.vy = 0; }
+
+        // ── Spawn bugs ──────────────────────────────────────
+        bugTimer--;
+        if (bugTimer <= 0) {
+            spawnBug();
+            // Next bug: 70–110 frames (varies with speed)
+            bugTimer = Math.floor(70 + Math.random() * 40);
+        }
+
+        // ── Spawn coffee ─────────────────────────────────────
+        coffeeTimer--;
+        if (coffeeTimer <= 0) {
+            spawnCoffee();
+            // Next coffee: 130–180 frames
+            coffeeTimer = Math.floor(130 + Math.random() * 50);
+        }
+
+        // ── Move & collide bugs ──────────────────────────────
+        for (let i = obstacles.length - 1; i >= 0; i--) {
+            const b = obstacles[i];
+            b.x -= speed;
+            if (b.x + b.w < 0) { obstacles.splice(i, 1); continue; }
+            if (hits(player, b.x, b.y, b.w, b.h)) {
+                energy = Math.max(0, energy - b.drain);
+                bugsHit++;
+                obstacles.splice(i, 1);
+                ui();
+                setMsg(`🐞 BUG HIT! -${b.drain} ENERGY! Find coffee! 🐞`, '#6a2a2a', '#ff8888');
+                setTimeout(() => { if (running) setMsg('🐛 Jump bugs · ☕ Grab coffee · Keep going!'); }, 1000);
+                if (energy <= 0) { endGame(false, '💀 SYSTEM CRASH: Energy depleted!'); return; }
+            }
+        }
+
+        // ── Move & collide coffee ────────────────────────────
+        for (let i = powerups.length - 1; i >= 0; i--) {
+            const c = powerups[i];
+            c.x -= speed;
+            if (c.x + c.w < 0) { powerups.splice(i, 1); continue; }
+            if (hits(player, c.x, c.y, c.w, c.h)) {
+                energy = Math.min(100, energy + c.restore);
+                coffeeCnt++;
+                powerups.splice(i, 1);
+                ui();
+                setMsg(`☕ COFFEE! +${c.restore} ENERGY! ☕`, '#1c5a2b', '#aaffaa');
+                setTimeout(() => { if (running) setMsg('🐛 Jump bugs · ☕ Grab coffee · Keep going!'); }, 900);
+            }
+        }
+
+        // Passive score
+        if (frameN % 12 === 0) { score += 0.7; ui(); }
+
+        // Low energy warning
+        if (energy < 25 && frameN % 60 === 0) {
+            setMsg('⚠️⚠️ LOW ENERGY! Find coffee FAST! ⚠️⚠️', '#4a2a00', '#ffaa00');
+        }
+
+        bgOff = (bgOff + 1.7) % 300;
+        frameN++;
+    }
+
+    // ── DRAW ─────────────────────────────────────────────────
+    function draw() {
+        ctx.clearRect(0, 0, W, H);
+
+        // Background
+        const grad = ctx.createLinearGradient(0, 0, 0, H);
+        grad.addColorStop(0, '#0b142a');
+        grad.addColorStop(0.6, '#16213e');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, W, H);
+
+        // Grid lines
+        ctx.strokeStyle = '#2f6080'; ctx.lineWidth = 1;
+        for (let i = 0; i < 22; i++) {
+            let x = (bgOff + i * 48) % W;
+            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+        }
+
+        // Ground
+        ctx.fillStyle = '#111c2c';
+        ctx.fillRect(0, GROUND_Y + 36, W, H - GROUND_Y);
+        ctx.fillStyle = '#5a9ec2';
+        ctx.fillRect(0, GROUND_Y + 36, W, 4);
+        ctx.fillStyle = '#b3defa'; ctx.font = '10px monospace';
+        ctx.fillText('C:\\dev> RealCore IT · jump bugs · grab coffee · survive!', 20, GROUND_Y + 56);
+
+        // ── Coffee ───────────────────────────────────────────
+        for (let c of powerups) {
+            ctx.fillStyle = '#daa447';
+            roundRect(ctx, c.x, c.y, c.w, c.h, 12);
+            ctx.fill();
+            ctx.font = '24px monospace';
+            ctx.fillText('☕', c.x + 4, c.y + 24);
+            ctx.fillStyle = '#ffffaa'; ctx.font = 'bold 9px monospace';
+            ctx.fillText(`+${c.restore}`, c.x + 4, c.y - 3);
+        }
+
+        // ── Bugs ─────────────────────────────────────────────
+        for (let b of obstacles) {
+            ctx.fillStyle = '#c04242';
+            roundRect(ctx, b.x, b.y, b.w, b.h, 12);
+            ctx.fill();
+            ctx.font = '24px monospace';
+            ctx.fillText('🐛', b.x + 4, b.y + 24);
+            ctx.fillStyle = '#fff5cc'; ctx.font = 'bold 8px monospace';
+            ctx.fillText(`-${b.drain}`, b.x + 18, b.y + 11);
+        }
+
+        // ── Player ───────────────────────────────────────────
+        ctx.fillStyle = '#4682b4';
+        roundRect(ctx, player.x, player.y, PW, PH, 14);
+        ctx.fill();
+        ctx.font = '30px monospace';
+        ctx.fillText('🧑‍💻', player.x + 2, player.y + 28);
+        ctx.fillStyle = '#3eff9e';
+        ctx.fillRect(player.x + 8, player.y + 18, 18, 9);
+        ctx.fillStyle = '#000'; ctx.font = '8px monospace';
+        ctx.fillText('>_', player.x + 11, player.y + 26);
+
+        // ── HUD ──────────────────────────────────────────────
+        ctx.font = 'bold 15px monospace';
+        ctx.fillStyle = '#f8e3b0';
+        ctx.fillText(`⏱️ ${Math.max(0, WIN_TIME - gameTime)}s`, W - 130, 40);
+        ctx.fillStyle = '#ccddff';
+        ctx.fillText(`⚡ ${speed.toFixed(1)}x`, W - 130, 65);
+
+        // Energy bar
+        ctx.fillStyle = '#332211';
+        ctx.fillRect(W - 190, 85, 150, 14);
+        const barW = (energy / 100) * 150;
+        ctx.fillStyle = energy > 55 ? '#5fdd5f' : energy > 25 ? '#f4a261' : '#e35f5f';
+        ctx.fillRect(W - 190, 85, barW, 14);
+        ctx.fillStyle = '#ffeecc'; ctx.font = 'bold 9px monospace';
+        ctx.fillText(`🔋 ${Math.floor(energy)}%`, W - 178, 97);
+
+        if (energy < 25 && running) {
+            ctx.fillStyle = '#ff8866'; ctx.font = 'bold 11px monospace';
+            ctx.fillText('❗ NEED COFFEE ❗', W - 260, 128);
+        }
+
+        // Game over overlay
+        if (!running) {
+            ctx.fillStyle = 'rgba(0,0,0,0.55)';
+            ctx.fillRect(0, 0, W, H);
+            ctx.font = 'bold 36px monospace';
+            ctx.fillStyle = '#ff8855';
+            ctx.textAlign = 'center';
+            ctx.fillText('☠️  GAME OVER  ☠️', W/2, H/2 - 30);
+            ctx.font = '16px monospace';
+            ctx.fillStyle = '#ccaa88';
+            ctx.fillText('Click RESTART to debug again', W/2, H/2 + 20);
+            ctx.textAlign = 'left';
+        }
+    }
+
+    // ── ROUND RECT POLYFILL ──────────────────────────────────
+    function roundRect(c, x, y, w, h, r) {
+        c.beginPath();
+        if (c.roundRect) { c.roundRect(x, y, w, h, r); }
+        else {
+            if (w < 2*r) r = w/2; if (h < 2*r) r = h/2;
+            c.moveTo(x+r, y);
+            c.lineTo(x+w-r, y); c.quadraticCurveTo(x+w, y, x+w, y+r);
+            c.lineTo(x+w, y+h-r); c.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+            c.lineTo(x+r, y+h); c.quadraticCurveTo(x, y+h, x, y+h-r);
+            c.lineTo(x, y+r); c.quadraticCurveTo(x, y, x+r, y);
+            c.closePath();
+        }
+    }
+
+    // ── JUMP ─────────────────────────────────────────────────
+    function jump() {
+        if (!running) return;
+        if (player.onGround) {
+            player.vy = JUMP_POWER;
+            player.onGround = false;
+        }
+    }
+
+    // ── LOOP ─────────────────────────────────────────────────
+    function loop() { update(); draw(); requestAnimationFrame(loop); }
+
+    // ── EVENTS ───────────────────────────────────────────────
+    canvas.addEventListener('click', jump);
+    canvas.addEventListener('touchstart', e => { e.preventDefault(); jump(); }, { passive: false });
+    window.addEventListener('keydown', e => {
+        if (e.key === 'ArrowUp' || e.key === ' ') { e.preventDefault(); jump(); }
+    });
+    document.getElementById('restartBtn').addEventListener('click', restart);
+
+    restart();
+    loop();
+})();
+</script>
+</body>
+</html>
