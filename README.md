@@ -1,6 +1,6 @@
 # 🐞 Debug Dash
 
-> A fast-paced endless runner game by **RealCore Services GmbH**  
+> A fast-paced endless runner game 
 > Built with HTML5 Canvas · No dependencies · Pure JavaScript
 
 ---
